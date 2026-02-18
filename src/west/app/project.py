@@ -374,8 +374,11 @@ below.
                 + (f', rev. {args.manifest_rev}' if args.manifest_rev else '')
             )
 
+            global_depth = getattr(args, 'depth', None)
+            depth_args = ['--depth', str(global_depth)] if global_depth else []
             self.check_call(
-                ['git', 'clone'] + branch_opt + args.clone_opt + [manifest_url, os.fspath(tempdir)]
+                ['git', 'clone'] + depth_args + branch_opt + args.clone_opt +
+                [manifest_url, os.fspath(tempdir)]
             )
         except subprocess.CalledProcessError:
             shutil.rmtree(tempdir, ignore_errors=True)
@@ -1367,6 +1370,8 @@ class Update(_ProjectCommand):
         self.auto_cache = args.auto_cache or config.get('update.auto-cache')
         self.sync_submodules = config.getboolean('update.sync-submodules', default=True)
 
+        self.global_depth = getattr(args, 'depth', None)
+
         self.group_filter: List[str] = []
 
         def handle(group_filter_item):
@@ -1815,11 +1820,11 @@ class Update(_ProjectCommand):
             project.git(['remote', 'add', '--', project.remote_name, project.url])
         else:
             self.small_banner(f'{project.name}: cloning from {cache_dir}')
-            # Clone the project from a local cache repository. Set the
-            # remote name to the value that would be used without a
-            # cache.
+            depth = self.global_depth or project.clone_depth
+            depth_args = ['--depth', str(depth)] if depth else []
             project.git(
-                ['clone', '--origin', project.remote_name, cache_dir, project.abspath],
+                ['clone'] + depth_args + ['--origin', project.remote_name,
+                 cache_dir, project.abspath],
                 cwd=self.topdir,
             )
             # Reset the remote's URL to the project's fetch URL.
@@ -1954,7 +1959,8 @@ class Update(_ProjectCommand):
         # --tags is required to get tags if we're not run as 'west
         # update --narrow', since the remote is specified as a URL.
         tags = ['--tags'] if not self.narrow else []
-        clone_depth = ['--depth', str(project.clone_depth)] if project.clone_depth else []
+        depth = self.global_depth or project.clone_depth
+        clone_depth = ['--depth', str(depth)] if depth else []
 
         # automatically fetch the auto-cache so that it is up-to-date
         self.handle_auto_cache(project)

@@ -93,6 +93,7 @@ class EarlyArgs(NamedTuple):
     version: bool  # True if -V was given
     zephyr_base: str | None  # -z argument value
     verbosity: int  # 0 if not given, otherwise counts
+    depth: int | None  # --depth:N or --depth=N global clone depth
     command_name: str | None
 
     # Other arguments are appended here.
@@ -106,6 +107,7 @@ def parse_early_args(argv: list[str]) -> EarlyArgs:
     version = False
     zephyr_base = None
     verbosity = 0
+    depth = None
     command_name = None
     unexpected_arguments = []
 
@@ -142,6 +144,13 @@ def parse_early_args(argv: list[str]) -> EarlyArgs:
         else:
             unexpected_arguments.append(rest)
 
+    def _parse_depth(val):
+        nonlocal depth
+        try:
+            depth = int(val)
+        except ValueError:
+            unexpected_arguments.append(f'--depth (bad value: {val})')
+
     for arg in argv:
         if expecting_zephyr_base:
             zephyr_base = arg
@@ -170,13 +179,16 @@ def parse_early_args(argv: list[str]) -> EarlyArgs:
                 zephyr_base = arg[3:]
             else:
                 zephyr_base = arg[2:]
+        elif arg.startswith('--depth:') or arg.startswith('--depth='):
+            _parse_depth(arg.split(':', 1)[-1] if ':' in arg else arg.split('=', 1)[-1])
         elif arg.startswith('-'):
             unexpected_arguments.append(arg)
         else:
             command_name = arg
             break
 
-    return EarlyArgs(help, version, zephyr_base, verbosity, command_name, unexpected_arguments)
+    return EarlyArgs(help, version, zephyr_base, verbosity, depth,
+                     command_name, unexpected_arguments)
 
 
 class LogFormatter(logging.Formatter):
@@ -576,6 +588,17 @@ class WestApp:
             help='print the program version and exit',
         )
 
+        parser.add_argument(
+            '--depth',
+            default=None,
+            type=int,
+            metavar='N',
+            help='''override clone depth for all git clone/fetch
+                    operations (e.g. --depth:1 or --depth=1);
+                    takes precedence over per-project clone-depth
+                    in the manifest''',
+        )
+
         subparser_gen = parser.add_subparsers(metavar='<command>', dest='command')
 
         return parser, subparser_gen
@@ -584,6 +607,10 @@ class WestApp:
         # Parse command line arguments and run the WestCommand.
         # If we're running an extension, instantiate it from its
         # spec and re-parse arguments before running.
+
+        # Normalize --depth:N to --depth=N so argparse can handle it.
+        argv = [a.replace('--depth:', '--depth=', 1)
+                if a.startswith('--depth:') else a for a in argv]
 
         if not early_args.help and early_args.command_name != "help":
             # Recursively replace alias command(s) if set
