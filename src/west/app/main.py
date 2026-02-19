@@ -23,6 +23,7 @@ import tempfile
 import textwrap
 import traceback
 from collections import OrderedDict
+from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path, PurePath
 from subprocess import CalledProcessError
@@ -73,6 +74,42 @@ from west.manifest import (
 from west.util import WestNotFound, quote_sh_list, west_topdir
 from west.version import __version__
 
+_SHALLOW_DEFAULT = 'depth:1,no-tags,narrow'
+
+
+@dataclass
+class ShallowOpts:
+    depth: int | None = None
+    no_tags: bool = False
+    narrow: bool = False
+
+
+def parse_shallow_opts(value: str) -> ShallowOpts:
+    '''Parse a comma-separated shallow options string into ShallowOpts.
+
+    Accepted tokens: depth:N, no-tags, narrow
+    '''
+    opts = ShallowOpts()
+    for token in value.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        if token.startswith('depth:'):
+            try:
+                opts.depth = int(token.split(':', 1)[1])
+            except ValueError:
+                raise argparse.ArgumentTypeError(
+                    f'invalid depth value in --shallow: {token!r}')
+        elif token == 'no-tags':
+            opts.no_tags = True
+        elif token == 'narrow':
+            opts.narrow = True
+        else:
+            raise argparse.ArgumentTypeError(
+                f'unknown --shallow option: {token!r}\n'
+                '  valid options: depth:N, no-tags, narrow')
+    return opts
+
 
 class EarlyArgs(NamedTuple):
     # Data type for storing "early" argument parsing results.
@@ -93,6 +130,7 @@ class EarlyArgs(NamedTuple):
     version: bool  # True if -V was given
     zephyr_base: str | None  # -z argument value
     verbosity: int  # 0 if not given, otherwise counts
+    shallow: bool  # True if --shallow was given (with or without value)
     command_name: str | None
 
     # Other arguments are appended here.
@@ -106,6 +144,7 @@ def parse_early_args(argv: list[str]) -> EarlyArgs:
     version = False
     zephyr_base = None
     verbosity = 0
+    shallow = False
     command_name = None
     unexpected_arguments = []
 
@@ -170,13 +209,16 @@ def parse_early_args(argv: list[str]) -> EarlyArgs:
                 zephyr_base = arg[3:]
             else:
                 zephyr_base = arg[2:]
+        elif arg == '--shallow' or arg.startswith('--shallow='):
+            shallow = True
         elif arg.startswith('-'):
             unexpected_arguments.append(arg)
         else:
             command_name = arg
             break
 
-    return EarlyArgs(help, version, zephyr_base, verbosity, command_name, unexpected_arguments)
+    return EarlyArgs(help, version, zephyr_base, verbosity, shallow,
+                     command_name, unexpected_arguments)
 
 
 class LogFormatter(logging.Formatter):
@@ -576,6 +618,17 @@ class WestApp:
             help='print the program version and exit',
         )
 
+        parser.add_argument(
+            '--shallow',
+            default=None,
+            metavar='OPTS',
+            help='''minimize git network traffic; bare --shallow
+                    is equivalent to --shallow=depth:1,no-tags,narrow.
+                    Options: depth:N (set clone/fetch depth),
+                    no-tags (skip fetching tags),
+                    narrow (fetch exact revision only)''',
+        )
+
         subparser_gen = parser.add_subparsers(metavar='<command>', dest='command')
 
         return parser, subparser_gen
@@ -584,6 +637,11 @@ class WestApp:
         # Parse command line arguments and run the WestCommand.
         # If we're running an extension, instantiate it from its
         # spec and re-parse arguments before running.
+
+        # Normalize bare --shallow (no =value) to --shallow=<default>
+        # so argparse doesn't consume the subcommand as the value.
+        argv = [f'--shallow={_SHALLOW_DEFAULT}' if a == '--shallow' else a
+                for a in argv]
 
         if not early_args.help and early_args.command_name != "help":
             # Recursively replace alias command(s) if set
@@ -611,6 +669,12 @@ class WestApp:
 
         self.handle_early_arg_errors(early_args)
         args, unknown = self.west_parser.parse_known_args(args=argv)
+
+        # Parse --shallow string value into a ShallowOpts object.
+        if args.shallow is not None:
+            args.shallow = parse_shallow_opts(args.shallow)
+        else:
+            args.shallow = ShallowOpts()
 
         # Set up logging verbosity before running the command, for
         # backwards compatibility. Remove this when we can part ways

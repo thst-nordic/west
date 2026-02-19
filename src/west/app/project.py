@@ -374,8 +374,12 @@ below.
                 + (f', rev. {args.manifest_rev}' if args.manifest_rev else '')
             )
 
+            from west.app.main import ShallowOpts
+            shallow = getattr(args, 'shallow', ShallowOpts())
+            depth_args = ['--depth', str(shallow.depth)] if shallow.depth else []
             self.check_call(
-                ['git', 'clone'] + branch_opt + args.clone_opt + [manifest_url, os.fspath(tempdir)]
+                ['git', 'clone'] + depth_args + branch_opt + args.clone_opt +
+                [manifest_url, os.fspath(tempdir)]
             )
         except subprocess.CalledProcessError:
             shutil.rmtree(tempdir, ignore_errors=True)
@@ -1367,6 +1371,9 @@ class Update(_ProjectCommand):
         self.auto_cache = args.auto_cache or config.get('update.auto-cache')
         self.sync_submodules = config.getboolean('update.sync-submodules', default=True)
 
+        from west.app.main import ShallowOpts
+        self.shallow = getattr(args, 'shallow', ShallowOpts())
+
         self.group_filter: List[str] = []
 
         def handle(group_filter_item):
@@ -1551,6 +1558,8 @@ class Update(_ProjectCommand):
             config_opts.extend(['-c', config_opt])
 
         cache_dir = self.project_cache(project)
+        depth_args = ['--depth', str(self.shallow.depth)] if self.shallow.depth else []
+
         # For the boolean type, update all the submodules.
         if isinstance(submodules, bool):
             if cache_dir is None:
@@ -1559,6 +1568,7 @@ class Update(_ProjectCommand):
                 project.git(
                     config_opts
                     + ['submodule', 'update', '--init', submodules_update_strategy, '--recursive']
+                    + depth_args
                 )
                 return
             else:
@@ -1592,6 +1602,7 @@ class Update(_ProjectCommand):
             project.git(
                 config_opts
                 + ['submodule', 'update', '--init', submodules_update_strategy, '--recursive']
+                + depth_args
                 + ref
                 + [submodule.path]
             )
@@ -1815,11 +1826,11 @@ class Update(_ProjectCommand):
             project.git(['remote', 'add', '--', project.remote_name, project.url])
         else:
             self.small_banner(f'{project.name}: cloning from {cache_dir}')
-            # Clone the project from a local cache repository. Set the
-            # remote name to the value that would be used without a
-            # cache.
+            depth = self.shallow.depth or project.clone_depth
+            depth_args = ['--depth', str(depth)] if depth else []
             project.git(
-                ['clone', '--origin', project.remote_name, cache_dir, project.abspath],
+                ['clone'] + depth_args + ['--origin', project.remote_name,
+                 cache_dir, project.abspath],
                 cwd=self.topdir,
             )
             # Reset the remote's URL to the project's fetch URL.
@@ -1932,7 +1943,8 @@ class Update(_ProjectCommand):
         # non-commit object" error when the revision is an annotated
         # tag. ^{commit} type peeling isn't supported for the <src> in a
         # <src>:<dst> refspec, so we have to do it separately.
-        if _maybe_sha(rev) and not self.narrow:
+        narrow = self.narrow or self.shallow.narrow
+        if _maybe_sha(rev) and not narrow:
             # We can't in general fetch a SHA from a remote, as some hosts
             # forbid it for security reasons. Let's hope it's reachable
             # from some branch.
@@ -1941,8 +1953,8 @@ class Update(_ProjectCommand):
         else:
             # Either the revision is definitely not a SHA and is
             # therefore safe to fetch directly, or the user said
-            # that's OK. This avoids fetching unnecessary refs from
-            # the remote.
+            # that's OK (via --narrow or --shallow=narrow). This avoids
+            # fetching unnecessary refs from the remote.
             #
             # We update manifest-rev to FETCH_HEAD instead of using a
             # refspec in case the revision is a tag, which we can't use
@@ -1951,10 +1963,10 @@ class Update(_ProjectCommand):
             next_manifest_rev = 'FETCH_HEAD^{commit}'
 
         self.small_banner(f'{project.name}: fetching, need revision {rev}')
-        # --tags is required to get tags if we're not run as 'west
-        # update --narrow', since the remote is specified as a URL.
-        tags = ['--tags'] if not self.narrow else []
-        clone_depth = ['--depth', str(project.clone_depth)] if project.clone_depth else []
+        no_tags = self.shallow.no_tags
+        tags = ['--tags'] if not no_tags else []
+        depth = self.shallow.depth or project.clone_depth
+        clone_depth = ['--depth', str(depth)] if depth else []
 
         # automatically fetch the auto-cache so that it is up-to-date
         self.handle_auto_cache(project)
