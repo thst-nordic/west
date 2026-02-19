@@ -562,12 +562,12 @@ class WestApp:
         # Make a fresh instance of the top level argument parser
         # and subparser generator, and return them in that order.
 
-        # The prog='west' override avoids the absolute path of the
+        # The prog= override avoids the absolute path of the
         # main.py script showing up when West is run via the wrapper
         parser = WestArgumentParser(
-            prog='west',
-            description='The Zephyr RTOS meta-tool.',
-            epilog='''Run "west help <command>" for help on each <command>.''',
+            prog='west-shallow',
+            description='The Zephyr RTOS meta-tool (shallow-optimized).',
+            epilog='''Run "west-shallow help <command>" for help on each <command>.''',
             add_help=False,
             west_app=self,
             allow_abbrev=False,
@@ -622,11 +622,22 @@ class WestApp:
             '--shallow',
             default=None,
             metavar='OPTS',
-            help='''minimize git network traffic; bare --shallow
-                    is equivalent to --shallow=depth:1,no-tags,narrow.
+            help='''minimize git network traffic (DEFAULT);
+                    bare --shallow is equivalent to
+                    --shallow=depth:1,no-tags,narrow.
                     Options: depth:N (set clone/fetch depth),
                     no-tags (skip fetching tags),
                     narrow (fetch exact revision only)''',
+        )
+
+        parser.add_argument(
+            '--normal',
+            '--normal-west',
+            dest='normal_west',
+            action='store_true',
+            default=False,
+            help='''disable shallow defaults; use original west
+                    behavior (full depth, tags, all refs)''',
         )
 
         subparser_gen = parser.add_subparsers(metavar='<command>', dest='command')
@@ -658,7 +669,7 @@ class WestApp:
 
                 if len(alias.args) == 0:
                     # This loses the cmd.dbg() above - too bad, don't use empty aliases
-                    self.print_usage_and_exit(f'west: empty alias "{alias.name}"')
+                    self.print_usage_and_exit(f'west-shallow: empty alias "{alias.name}"')
 
                 # Find and replace the command name. Must skip any other early args like -v
                 for i, arg in enumerate(argv):
@@ -670,11 +681,14 @@ class WestApp:
         self.handle_early_arg_errors(early_args)
         args, unknown = self.west_parser.parse_known_args(args=argv)
 
-        # Parse --shallow string value into a ShallowOpts object.
-        if args.shallow is not None:
+        # Resolve shallow options. --normal wins over --shallow.
+        # When neither is given, shallow defaults are active.
+        if getattr(args, 'normal_west', False):
+            args.shallow = ShallowOpts()
+        elif args.shallow is not None:
             args.shallow = parse_shallow_opts(args.shallow)
         else:
-            args.shallow = ShallowOpts()
+            args.shallow = parse_shallow_opts(_SHALLOW_DEFAULT)
 
         # Set up logging verbosity before running the command, for
         # backwards compatibility. Remove this when we can part ways
@@ -776,12 +790,12 @@ class WestApp:
         if self.topdir:
             extra_help = (
                 f'workspace {self.topdir} does not define '
-                'this extension command -- try "west help"'
-                ' and "west -vv status"'
+                'this extension command -- try "west-shallow help"'
+                ' and "west-shallow -vv status"'
             )
         else:
             extra_help = 'do you need to run this inside a workspace?'
-        self.print_usage_and_exit(f'west: unknown command "{command_name}"; {extra_help}')
+        self.print_usage_and_exit(f'west-shallow: unknown command "{command_name}"; {extra_help}')
 
     def print_usage_and_exit(self, message):
         self.west_parser.print_usage(file=sys.stderr)

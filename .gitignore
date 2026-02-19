@@ -1,6 +1,6 @@
 build/
 dist/
-west.egg-info/
+*.egg-info/
 __pycache__/
 .pytest_cache/
 .eggs/

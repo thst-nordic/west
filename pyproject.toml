@@ -3,7 +3,7 @@ requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "west"
+name = "west-shallow"
 version = "1.5.99"
 authors = [{name = "Zephyr Project", email = "devel@lists.zephyrproject.org"}]
 description = "Zephyr RTOS Project meta-tool"
@@ -35,7 +35,7 @@ content-type = "text/x-rst"
 Homepage = "https://github.com/zephyrproject-rtos/west"
 
 [project.scripts]
-west = "west.app.main:main"
+west-shallow = "west.app.main:main"
 
 [dependency-groups]
 lint = [
