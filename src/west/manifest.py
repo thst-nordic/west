@@ -19,6 +19,7 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn
+from urllib.parse import urlsplit
 
 import pykwalify.core
 import yaml
@@ -456,6 +457,59 @@ class _import_ctx(NamedTuple):
 
     # Bit vector of flags that modify import behavior.
     import_flags: 'ImportFlag'
+
+    # Origin URL of the workspace manifest git repository, used to pick
+    # among dynamic remotes when a project lists multiple remote names.
+    loader_origin_url: str | None = None
+
+
+def _normalize_git_remote(url: str) -> str:
+    # Comparable form for HTTPS, git@host:path, and ssh:// URLs.
+    url = url.strip()
+    if url.startswith('git@'):
+        host_path = url[4:]
+        if ':' in host_path:
+            host, path = host_path.split(':', 1)
+            url = f'https://{host}/{path}'
+        else:
+            url = f'https://{host_path}'
+    elif url.startswith('ssh://'):
+        split = urlsplit(url)
+        if split.hostname:
+            path = split.path.lstrip('/')
+            url = f'https://{split.hostname}/{path}' if path else f'https://{split.hostname}'
+    return url.rstrip('/').removesuffix('.git').lower()
+
+
+def _remote_matches_loader(url_base: str, loader_origin_url: str) -> bool:
+    base = _normalize_git_remote(url_base)
+    loader = _normalize_git_remote(loader_origin_url)
+    return loader == base or loader.startswith(f'{base}/')
+
+
+def _manifest_origin_url(repo_abspath: PathType) -> str | None:
+    try:
+        out = subprocess.check_output(
+            ['git', '-C', os.fspath(repo_abspath), 'remote', 'get-url', 'origin'],
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return out.decode().strip() or None
+
+
+class _RemoteDef(NamedTuple):
+    url_base: str
+    dynamic: bool
+
+
+def _parse_remotes(manifest_data: dict[str, Any]) -> dict[str, _RemoteDef]:
+    remotes: dict[str, _RemoteDef] = {}
+    for remote in manifest_data.get('remotes', []):
+        remotes[remote['name']] = _RemoteDef(
+            remote['url-base'], bool(remote.get('dynamic', False))
+        )
+    return remotes
 
 
 def _imap_filter_allows(imap_filter: ImapFilterFnType, project: 'Project') -> bool:
@@ -2048,6 +2102,7 @@ class Manifest:
                 ) from err
 
             current_repo_abspath = topdir_abspath / manifest_path
+            loader_origin_url = _manifest_origin_url(current_repo_abspath)
 
             self.abspath = os.fspath(current_abspath)
             self.relative_path = os.fspath(current_relpath)
@@ -2056,6 +2111,8 @@ class Manifest:
             self._raw_config_group_filter = get_option('manifest.group-filter')
             self._config_path = manifest_path
             _update_project_filter(project_filter, config.get('manifest.project-filter'))
+        else:
+            loader_origin_url = None
 
         return _import_ctx(
             projects={},
@@ -2070,6 +2127,7 @@ class Manifest:
             current_repo_abspath=current_repo_abspath,
             project_importer=project_importer,
             import_flags=import_flags,
+            loader_origin_url=loader_origin_url,
         )
 
     def _recursive_init(self, ctx: _import_ctx):
@@ -2111,9 +2169,10 @@ class Manifest:
 
         # Add this manifest's projects to the map, and handle imported
         # projects and group-filter values.
-        url_bases = {r['name']: r['url-base'] for r in manifest_data.get('remotes', [])}
+        remotes = _parse_remotes(manifest_data)
+        url_bases = {name: remote.url_base for name, remote in remotes.items()}
         defaults = self._load_defaults(manifest_data.get('defaults', {}), url_bases)
-        self._load_projects(manifest_data, url_bases, defaults)
+        self._load_projects(manifest_data, remotes, url_bases, defaults)
 
         # The manifest is resolved; perform post-resolution validation.
         self._check_paths_are_unique()
@@ -2393,14 +2452,18 @@ class Manifest:
         return _defaults(mdrem, defaults.get('revision', _DEFAULT_REV))
 
     def _load_projects(
-        self, manifest: dict[str, Any], url_bases: dict[str, str], defaults: _defaults
+        self,
+        manifest: dict[str, Any],
+        remotes: dict[str, _RemoteDef],
+        url_bases: dict[str, str],
+        defaults: _defaults,
     ) -> None:
         # Load projects and add them to self._ctx.projects.
 
         have_imports = []
         names = set()
         for pd in manifest['projects']:
-            project = self._load_project(pd, url_bases, defaults)
+            project = self._load_project(pd, remotes, url_bases, defaults)
             name = project.name
 
             if not _imap_filter_allows(self._ctx.imap_filter, project):
@@ -2433,7 +2496,64 @@ class Manifest:
         for project, imp in have_imports:
             self._import_from_project(project, imp)
 
-    def _load_project(self, pd: dict, url_bases: dict[str, str], defaults: _defaults) -> Project:
+    def _resolve_project_remote(
+        self,
+        name: str,
+        remote: Any,
+        remotes: dict[str, _RemoteDef],
+        defaults: _defaults,
+    ) -> str | None:
+        if remote is None:
+            return defaults.remote
+
+        if isinstance(remote, str):
+            return remote
+
+        if isinstance(remote, list):
+            if not remote:
+                self._malformed(f'project {name}: "remote" list is empty')
+            loader_origin_url = self._ctx.loader_origin_url
+            if not loader_origin_url:
+                self._malformed(
+                    f'project {name}: "remote" list requires the manifest '
+                    'repository origin URL (initialize from a git clone with '
+                    'remote.origin.url set)'
+                )
+            matches: list[str] = []
+            for remote_name in remote:
+                if not isinstance(remote_name, str):
+                    self._malformed(
+                        f'project {name}: remote list entries must be strings'
+                    )
+                if remote_name not in remotes:
+                    self._malformed(
+                        f'project {name} remote {remote_name} is not defined'
+                    )
+                remote_def = remotes[remote_name]
+                if not remote_def.dynamic:
+                    self._malformed(
+                        f'project {name}: remote {remote_name} must have '
+                        'dynamic: true when used in a remote list'
+                    )
+                if _remote_matches_loader(remote_def.url_base, loader_origin_url):
+                    matches.append(remote_name)
+            if len(matches) != 1:
+                self._malformed(
+                    f'project {name}: expected exactly one dynamic remote to '
+                    f'match manifest origin {loader_origin_url!r}, got '
+                    f'{matches or "none"}'
+                )
+            return matches[0]
+
+        self._malformed(f'project {name}: invalid "remote" value {remote!r}')
+
+    def _load_project(
+        self,
+        pd: dict,
+        remotes: dict[str, _RemoteDef],
+        url_bases: dict[str, str],
+        defaults: _defaults,
+    ) -> Project:
         # pd = project data (dictionary with values parsed from the
         # manifest)
 
@@ -2452,12 +2572,13 @@ class Manifest:
         # - remote is tested next (and must be defined if present)
         # - default remote is tested last, if there is one
         url = pd.get('url')
-        remote = pd.get('remote')
+        raw_remote = pd.get('remote')
         repo_path = pd.get('repo-path')
-        if remote and url:
-            self._malformed(f'project {name} has both "remote: {remote}" and "url: {url}"')
-        if defaults.remote and not (remote or url):
-            remote = defaults.remote
+        if raw_remote is not None and url:
+            self._malformed(
+                f'project {name} has both "remote: {raw_remote}" and "url: {url}"'
+            )
+        remote = self._resolve_project_remote(name, raw_remote, remotes, defaults)
 
         if url:
             if repo_path:

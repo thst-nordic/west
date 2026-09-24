@@ -3651,6 +3651,142 @@ def test_submodule_manifest():
     assert 'submodules' not in mp
 
 
+def test_dynamic_remote_matches_manifest_origin(tmp_workspace, manifest_repo):
+    subprocess.check_call(
+        [GIT, 'remote', 'add', 'origin', 'https://github.com/nrfconnect/manifest-sdk.git'],
+        cwd=manifest_repo,
+    )
+    with open(manifest_repo / 'west.yml', 'w', encoding='utf-8') as f:
+        f.write(
+            textwrap.dedent(
+                '''\
+                manifest:
+                  remotes:
+                  - name: ncs
+                    url-base: https://github.com/nrfconnect
+                    dynamic: true
+                  - name: babblesim
+                    url-base: https://github.com/BabbleSim
+                    dynamic: true
+                  projects:
+                  - name: sdk-nrf
+                    remote: [ncs, babblesim]
+                    revision: main
+                '''
+            )
+        )
+    manifest = Manifest.from_topdir(tmp_workspace)
+    assert manifest.get_projects(['sdk-nrf'])[0].url == 'https://github.com/nrfconnect/sdk-nrf'
+
+
+def test_dynamic_remote_git_ssh_origin(tmp_workspace, manifest_repo):
+    subprocess.check_call(
+        [GIT, 'remote', 'add', 'origin', 'git@github.com:nrfconnect/manifest-sdk.git'],
+        cwd=manifest_repo,
+    )
+    with open(manifest_repo / 'west.yml', 'w', encoding='utf-8') as f:
+        f.write(
+            textwrap.dedent(
+                '''\
+                manifest:
+                  remotes:
+                  - name: ncs
+                    url-base: https://github.com/nrfconnect
+                    dynamic: true
+                  - name: other
+                    url-base: https://github.com/other-org
+                    dynamic: true
+                  projects:
+                  - name: app
+                    remote: [ncs, other]
+                '''
+            )
+        )
+    manifest = Manifest.from_topdir(tmp_workspace)
+    assert manifest.get_projects(['app'])[0].url == 'https://github.com/nrfconnect/app'
+
+
+def test_dynamic_remote_prefix_url_base_no_match(tmp_workspace, manifest_repo):
+    subprocess.check_call(
+        [GIT, 'remote', 'add', 'origin', 'https://github.com/nrfconnect/manifest-sdk.git'],
+        cwd=manifest_repo,
+    )
+    with open(manifest_repo / 'west.yml', 'w', encoding='utf-8') as f:
+        f.write(
+            textwrap.dedent(
+                '''\
+                manifest:
+                  remotes:
+                  - name: nrf
+                    url-base: https://github.com/nrf
+                    dynamic: true
+                  - name: nrfconnect
+                    url-base: https://github.com/nrfconnect
+                    dynamic: true
+                  projects:
+                  - name: app
+                    remote: [nrf, nrfconnect]
+                '''
+            )
+        )
+    manifest = Manifest.from_topdir(tmp_workspace)
+    assert manifest.get_projects(['app'])[0].url == 'https://github.com/nrfconnect/app'
+
+
+def test_dynamic_remote_ssh_scheme_origin(tmp_workspace, manifest_repo):
+    subprocess.check_call(
+        [GIT, 'remote', 'add', 'origin', 'ssh://git@github.com/nrfconnect/manifest-sdk.git'],
+        cwd=manifest_repo,
+    )
+    with open(manifest_repo / 'west.yml', 'w', encoding='utf-8') as f:
+        f.write(
+            textwrap.dedent(
+                '''\
+                manifest:
+                  remotes:
+                  - name: ncs
+                    url-base: https://github.com/nrfconnect
+                    dynamic: true
+                  - name: other
+                    url-base: https://github.com/other-org
+                    dynamic: true
+                  projects:
+                  - name: app
+                    remote: [ncs, other]
+                '''
+            )
+        )
+    manifest = Manifest.from_topdir(tmp_workspace)
+    assert manifest.get_projects(['app'])[0].url == 'https://github.com/nrfconnect/app'
+
+
+def test_dynamic_remote_no_match(tmp_workspace, manifest_repo):
+    subprocess.check_call(
+        [GIT, 'remote', 'add', 'origin', 'https://github.com/third-party/manifest.git'],
+        cwd=manifest_repo,
+    )
+    with open(manifest_repo / 'west.yml', 'w', encoding='utf-8') as f:
+        f.write(
+            textwrap.dedent(
+                '''\
+                manifest:
+                  remotes:
+                  - name: ncs
+                    url-base: https://github.com/nrfconnect
+                    dynamic: true
+                  - name: other
+                    url-base: https://github.com/other-org
+                    dynamic: true
+                  projects:
+                  - name: app
+                    remote: [ncs, other]
+                '''
+            )
+        )
+    with pytest.raises(MalformedManifest):
+        Manifest.from_topdir(tmp_workspace)
+
+
 #########################################
 # Various invalid manifests
 
