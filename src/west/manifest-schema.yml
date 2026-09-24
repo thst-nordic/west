@@ -65,6 +65,9 @@ mapping:
           url-base:
             required: true
             type: str
+          dynamic:
+            required: false
+            type: bool
 
   # The "projects" key specifies a sequence of "projects", each of which has a
   # remote, and may specify additional configuration.
@@ -86,10 +89,11 @@ mapping:
           description:
             required: false
             type: str
-          # Name of the project's remote. May not be combined with "url".
+          # Name of the project's remote, or a list of dynamic remote names
+          # (see "dynamic:" on remotes). May not be combined with "url".
           remote:
             required: false
-            type: str
+            type: any
           # If a remote is given, the project is fetched from this URL:
           #
           # remote.url-base + / + repo-path

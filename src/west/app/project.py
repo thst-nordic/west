@@ -234,8 +234,14 @@ Each component can have subdirectories, even the last one despite its name
 `manifest.file`.
 
 -t / --topdir WORKSPACE_DIR
-    The workspace directory; `.west` is created inside it. Defaults are
-    described per mode below.
+    Workspace root: west creates `.west` here. Defaults are described per
+    mode below.
+
+    Use when the root must not follow those defaults: run from another
+    directory (e.g. `-t path/to/ws`), or in remote mode use `-t` for the
+    workspace and `--manifest-path` for where the manifest repository is
+    cloned; for `-l`, set the root instead of the parent of the manifest
+    tree.
 
 --mp / --manifest-path SUBPATH
     Path, relative to the workspace, where the manifest tree
@@ -387,10 +393,11 @@ below.
             '--topdir',
             dest='topdir',
             metavar='WORKSPACE_DIR',
-            help='''the workspace directory where .west directory
-                    will be created (WORKSPACE_DIR/.west);
-                    the workspace directory may already exist
-                    and WORKSPACE_DIR/.west must not exist''',
+            help='''workspace root (WORKSPACE_DIR/.west); use when it is not
+                    cwd, or when remote init must split workspace root (-t)
+                    from manifest clone path (--manifest-path); the workspace
+                    directory may already exist and WORKSPACE_DIR/.west must
+                    not exist''',
         )
         parser.add_argument(
             '--rename-delay',
